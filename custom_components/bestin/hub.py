@@ -168,14 +168,14 @@ class ConnectionManager:
                 packet += await recv_exactly(3 - len(packet))
                 
                 if (
-                    packet[1] not in [0x28, 0x31, 0x41, 0x42, 0x61, 0xD1]
+                    packet[1] not in [0x28, 0x31, 0x32, 0x41, 0x42, 0x61, 0xD1]
                     and packet[1] & 0xF0 != 0x50   # For AIO (0x51-0x55)
                     and packet[1] & 0x30 != 0x30   # For Gen2 (0x3F, 0x31-0x36)
                 ):
                     return b''
 
                 if (
-                    (packet[1] == 0x31 and packet[2] in [0x00, 0x02, 0x80, 0x82])
+                    (packet[1] in [0x31, 0x32] and packet[2] in [0x00, 0x02, 0x80, 0x82])
                     or packet[1] == 0x61
                     or packet[1] == 0x17  # For AIO
                 ):
