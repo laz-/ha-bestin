@@ -8,11 +8,12 @@ from homeassistant.components.light import (
     ColorMode,
     DOMAIN as LIGHT_DOMAIN,
     LightEntity,
-    COLOR_MODE_BRIGHTNESS,
-    COLOR_MODE_COLOR_TEMP,
     ATTR_BRIGHTNESS,
     ATTR_COLOR_TEMP_KELVIN,
 )
+
+COLOR_MODE_BRIGHTNESS = ColorMode.BRIGHTNESS
+COLOR_MODE_COLOR_TEMP = ColorMode.COLOR_TEMP
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_ON, STATE_OFF, ATTR_STATE
 from homeassistant.core import callback, HomeAssistant

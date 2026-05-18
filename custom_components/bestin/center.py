@@ -16,10 +16,10 @@ from homeassistant.components.climate.const import (
     ATTR_CURRENT_TEMPERATURE,
     HVACMode,
 )
-from homeassistant.components.light import (
-    COLOR_MODE_BRIGHTNESS,
-    COLOR_MODE_COLOR_TEMP,
-)
+from homeassistant.components.light import ColorMode
+
+COLOR_MODE_BRIGHTNESS = ColorMode.BRIGHTNESS
+COLOR_MODE_COLOR_TEMP = ColorMode.COLOR_TEMP
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
