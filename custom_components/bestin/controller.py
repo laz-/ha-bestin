@@ -427,7 +427,7 @@ class BestinController:
     
     def parse_gas(self, packet: bytearray) -> tuple[int, bool]:
         """Parse gas data from a packet"""
-        room_id = 0
+        room_id = packet[1] - 0x31  # 0x31 → 0, 0x32 → 1
         gas_state = bool(packet[5])
         return room_id, gas_state
     
@@ -651,6 +651,7 @@ class BestinController:
         elif packet_len == 10 and command != 0x00:
             parser_mapping = {
                 0x31: (self.parse_gas, "gas"),
+                0x32: (self.parse_gas, "gas"),
                 0x41: (self.parse_doorlock, "doorlock"),
                 0x61: (self.parse_fan, "fan"),
             }
