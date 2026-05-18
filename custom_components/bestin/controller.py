@@ -257,8 +257,9 @@ class BestinController:
         self, timestamp: int, room_id: int, pos_id: int, sub_type: str, value: bool
     ) -> bytearray:
         """Create a packet for gas control"""
+        header = 0x31 + room_id  # 0x31 = gas_0, 0x32 = gas_1
         packet = bytearray(
-            [0x02, 0x31, 0x02, timestamp & 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            [0x02, header, 0x02, timestamp & 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         )
         packet[-1] = self.calculate_checksum(packet)
         return packet
