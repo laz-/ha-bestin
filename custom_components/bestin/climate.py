@@ -94,9 +94,11 @@ class BestinClimate(BestinDevice, ClimateEntity):
 
     async def async_turn_on(self) -> None:
         """Turn the entity on."""
+        await self.async_set_hvac_mode(HVACMode.HEAT)
 
     async def async_turn_off(self) -> None:
         """Turn the entity off."""
+        await self.async_set_hvac_mode(HVACMode.OFF)
 
     async def async_set_hvac_mode(self, hvac_mode: str) -> None:
         """Set new target hvac mode."""

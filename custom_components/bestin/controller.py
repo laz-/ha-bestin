@@ -111,6 +111,7 @@ class BestinController:
         if self.tasks:
             for task in self.tasks:
                 task.cancel()
+            await asyncio.gather(*self.tasks, return_exceptions=True)
             self.tasks = []
 
     @property
@@ -350,6 +351,9 @@ class BestinController:
         unique_id = f"{device_id}{uid_suffix}"
 
         if device_id not in self.devices:
+            if device_type not in DEVICE_PLATFORM_MAP:
+                LOGGER.error(f"Unknown device sub-type '{device_type}' — skipping entity creation")
+                return None
             device_info = DeviceInfo(
                 device_type=device_type,
                 name=device_name,
@@ -376,6 +380,8 @@ class BestinController:
         sub_states = state.items() if is_sub else [(None, state)]
         for sub_id, sub_state in sub_states:
             device = self.initial_device(device_id, sub_id, sub_state)
+            if device is None:
+                continue
 
             if device_type not in ["energy"] and sub_id and not sub_id.isdigit():
                 format_device = f"{device_type}:{''.join(filter(str.isalpha, sub_id))}"

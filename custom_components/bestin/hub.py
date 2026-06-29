@@ -313,7 +313,7 @@ class BestinHub:
         gen2_data: dict = {}
         try:
             while len(b''.join(chunk_storage)) < 1024:
-                received_data = await self.connection._receive_socket()
+                received_data = await self.connection.receive()
                 if not received_data:
                     break
                 chunk_storage.append(received_data)
@@ -371,10 +371,7 @@ class BestinHub:
         unique_id = device.unique_id
         device_info = device.info
         
-        if (
-            unique_id in self.entity_groups.get(domain, set()) or
-            device_info.device_id in self.entity_to_id
-        ):
+        if unique_id in self.entity_groups.get(domain, set()):
             return
         
         args = []
@@ -417,7 +414,7 @@ class BestinHub:
             self.gateway_mode = None
     
     async def async_initialize_serial(self) -> None:
-        """Initialize the serial connection."""
+        """Initialize the serial connection. Does not start processing — call async_start after platform setup."""
         try:
             if self.gateway_mode is None:
                 await self.determine_gateway_mode()
@@ -434,7 +431,6 @@ class BestinHub:
                 self.connection,
                 self.async_add_device_callback,
             )
-            await self.api.start()
         except Exception as ex:
             self.api = None
             raise RuntimeError(
@@ -443,7 +439,7 @@ class BestinHub:
             )
 
     async def async_initialize_center(self) -> None:
-        """Initialize the center connection."""
+        """Initialize the center connection. Does not start processing — call async_start after platform setup."""
         try:
             self.api = BestinCenterAPI(
                 self.hass,
@@ -453,10 +449,14 @@ class BestinHub:
                 self.cntr_version,
                 self.async_add_device_callback,
             )
-            await self.api.start()
         except Exception as ex:
             self.api = None
             raise RuntimeError(
                 f"Failed to initialize Bestin hub. Host: {self.hub_id}, Version: {self.cntr_version}. "
                 f"Error: {str(ex)}"
             )
+
+    async def async_start(self) -> None:
+        """Start processing after platform setup has registered all dispatcher listeners."""
+        if self.api:
+            await self.api.start()

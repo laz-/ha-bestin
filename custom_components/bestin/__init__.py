@@ -30,13 +30,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         LOGGER.info("Start center initialization.")
         await hub.async_initialize_center()
-    
+
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, hub.shutdown)
     )
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
+    # Platforms must be set up before starting the processing loop so their
+    # dispatcher listeners are registered before the first packets arrive.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await hub.async_start()
 
     return True
 

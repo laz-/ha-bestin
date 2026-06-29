@@ -122,5 +122,4 @@ class DeviceProfile:
     def update_callbacks(self) -> None:
         """Calls all registered callbacks."""
         for callback in self.callbacks:
-            assert callable(callback), "Callback should be callable"
             callback()
