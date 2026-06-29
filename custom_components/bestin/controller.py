@@ -579,8 +579,10 @@ class BestinController:
 
     def validate_response(self, packet: bytes, queue: dict):
         """Validate the response packet against the queued command"""
-        general_gateway = self.gateway_type == "General"
         command_packet = queue["command_packet"]
+        if command_packet is None:
+            return
+        general_gateway = self.gateway_type == "General"
         header_byte = command_packet[1]
 
         offset = 2 if general_gateway and len(command_packet) == 10 else 3

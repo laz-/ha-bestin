@@ -129,12 +129,15 @@ class ConnectionManager:
     async def receive(self, size: int = 64) -> bytes | None:
         """Receive data."""
         try:
-            if self.chunk_size == size: 
+            if self.chunk_size == size:
                 return await self._receive_socket()
             else:
                 return await self.reader.read(size)
         except asyncio.TimeoutError:
-            pass
+            if self.is_socket:
+                LOGGER.warning("Socket read timeout — no RS-485 data for 30s, reconnecting")
+                await self.reconnect()
+            return None
         except Exception as e:
             LOGGER.error(f"Failed to receive packet data: {e}")
             await self.reconnect()
@@ -142,7 +145,7 @@ class ConnectionManager:
 
     async def _receive_socket(self) -> bytes:
         """Receive data from a socket connection."""
-        
+
         async def recv_exactly(n):
             data = b''
             while len(data) < n:
@@ -156,9 +159,9 @@ class ConnectionManager:
         try:
             while True:
                 while True:
-                    initial_data = await self.reader.read(1)
+                    initial_data = await asyncio.wait_for(self.reader.read(1), timeout=30.0)
                     if not initial_data:
-                        return b''
+                        raise socket.error("Connection closed by remote")
                     packet += initial_data
                     if 0x02 in packet:
                         start_index = packet.index(0x02)
