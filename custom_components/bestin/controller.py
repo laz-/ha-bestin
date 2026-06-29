@@ -644,7 +644,7 @@ class BestinController:
             self.timestamp = packet[3]
 
         if packet_len != 10 and command in [0x81, 0x82, 0x91, 0x92, 0xB2]:
-            if header == 0x28:
+            if header == 0x28 and command in [0x91, 0x92]:
                 room_id, device_state = self.parse_thermostat(packet)
                 if device_state is None:
                     return
