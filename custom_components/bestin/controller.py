@@ -690,12 +690,14 @@ class BestinController:
         """Process incoming data"""
         while True:
             if not self.is_alive:
-                await asyncio.sleep(5)
+                await self.connection.reconnect()
+                await asyncio.sleep(1)
                 continue
 
             try:
                 received_data = await self.receive_data()
                 if not received_data:
+                    await asyncio.sleep(0.1)
                     continue
 
                 checksum_valid = self.verify_checksum(received_data)

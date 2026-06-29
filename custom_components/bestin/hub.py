@@ -32,7 +32,7 @@ from .until import check_ip_or_serial
 
 class ConnectionManager:
     """Handles hub connections."""
-    
+
     def __init__(self, conn_str: str) -> None:
         """Initialize the ConnectionManager."""
         self.conn_str = conn_str
@@ -43,6 +43,7 @@ class ConnectionManager:
         self.reconnect_attempts: int = 0
         self.last_reconnect_attempt: float = None
         self.next_attempt_time: float = None
+        self._reconnect_lock = asyncio.Lock()
 
         self.chunk_size = 64
         self.constant_packet_length = 10
@@ -57,18 +58,13 @@ class ConnectionManager:
         else:
             raise ValueError("Invalid connection string")
 
-    async def connect(self, timeout: int = 5) -> None:
-        """Establish a connection."""
-        try:
-            if self.is_serial:
-                await self._connect_serial()
-            elif self.is_socket:
-                await self._connect_socket()
-            self.reconnect_attempts = 0
-            LOGGER.info("Connection established successfully.")
-        except Exception as e:
-            LOGGER.error(f"Connection failed: {e}")
-            await self.reconnect()
+    async def connect(self) -> None:
+        """Establish a connection. Raises on failure."""
+        if self.is_serial:
+            await self._connect_serial()
+        elif self.is_socket:
+            await self._connect_socket()
+        LOGGER.info("Connection established successfully.")
 
     async def _connect_serial(self) -> None:
         """Establish a serial connection."""
@@ -86,35 +82,52 @@ class ConnectionManager:
     def is_connected(self) -> bool:
         """Check if the connection is active."""
         try:
+            if self.writer is None:
+                return False
             if self.is_serial:
-                return self.writer is not None and not self.writer.transport.is_closing()
+                return not self.writer.transport.is_closing()
             elif self.is_socket:
-                return self.writer is not None
+                return not self.writer.is_closing()
         except Exception:
             return False
 
-    async def reconnect(self) -> bool | None:
-        """Attempt to reconnect with exponential backoff."""
+    async def _close_writer(self) -> None:
+        """Close and null the writer."""
         if self.writer is not None:
-            self.writer.close()
-            await self.writer.wait_closed()
+            try:
+                self.writer.close()
+                await self.writer.wait_closed()
+            except Exception:
+                pass
+            self.writer = None
 
-        current_time = time.time()
-        if self.next_attempt_time and current_time < self.next_attempt_time:
-            return False
-        
-        self.reconnect_attempts += 1
-        delay = min(2 ** self.reconnect_attempts, 60) if self.last_reconnect_attempt else 1
-        self.last_reconnect_attempt = current_time
-        self.next_attempt_time = current_time + delay
-        LOGGER.info(f"Reconnection attempt {self.reconnect_attempts} after {delay} seconds delay...")
+    async def reconnect(self) -> None:
+        """Attempt to reconnect with exponential backoff. Serialized via lock."""
+        async with self._reconnect_lock:
+            await self._close_writer()
 
-        await asyncio.sleep(delay)
-        await self.connect()
-        if self.is_connected():
-            LOGGER.info(f"Successfully reconnected on attempt {self.reconnect_attempts}.")
-            self.reconnect_attempts = 0
-            self.next_attempt_time = None
+            current_time = time.time()
+            if self.next_attempt_time and current_time < self.next_attempt_time:
+                return
+
+            self.reconnect_attempts += 1
+            delay = min(2 ** self.reconnect_attempts, 60) if self.last_reconnect_attempt else 1
+            self.last_reconnect_attempt = current_time
+            self.next_attempt_time = current_time + delay
+            LOGGER.info(f"Reconnection attempt {self.reconnect_attempts} after {delay}s...")
+
+            await asyncio.sleep(delay)
+            try:
+                await self.connect()
+            except Exception as e:
+                LOGGER.error(f"Reconnection failed: {e}")
+                return
+
+            if self.is_connected():
+                LOGGER.info(f"Successfully reconnected on attempt {self.reconnect_attempts}.")
+                self.reconnect_attempts = 0
+                self.last_reconnect_attempt = None
+                self.next_attempt_time = None
 
     async def send(self, packet: bytearray, interval: int) -> None:
         """Send a packet."""
@@ -127,12 +140,12 @@ class ConnectionManager:
             await self.reconnect()
 
     async def receive(self, size: int = 64) -> bytes | None:
-        """Receive data."""
+        """Receive data with a 30s timeout covering the full packet read."""
         try:
             if self.chunk_size == size:
-                return await self._receive_socket()
+                return await asyncio.wait_for(self._receive_socket(), timeout=30.0)
             else:
-                return await self.reader.read(size)
+                return await asyncio.wait_for(self.reader.read(size), timeout=30.0)
         except asyncio.TimeoutError:
             if self.is_socket:
                 LOGGER.warning("Socket read timeout — no RS-485 data for 30s, reconnecting")
@@ -144,7 +157,7 @@ class ConnectionManager:
             return None
 
     async def _receive_socket(self) -> bytes:
-        """Receive data from a socket connection."""
+        """Receive one framed packet from the socket."""
 
         async def recv_exactly(n):
             data = b''
@@ -159,7 +172,7 @@ class ConnectionManager:
         try:
             while True:
                 while True:
-                    initial_data = await asyncio.wait_for(self.reader.read(1), timeout=30.0)
+                    initial_data = await self.reader.read(1)
                     if not initial_data:
                         raise socket.error("Connection closed by remote")
                     packet += initial_data
@@ -167,9 +180,9 @@ class ConnectionManager:
                         start_index = packet.index(0x02)
                         packet = packet[start_index:]
                         break
-                
+
                 packet += await recv_exactly(3 - len(packet))
-                
+
                 if (
                     packet[1] not in [0x28, 0x31, 0x32, 0x41, 0x42, 0x61, 0xD1]
                     and packet[1] & 0xF0 != 0x50   # For AIO (0x51-0x55)
@@ -185,29 +198,27 @@ class ConnectionManager:
                     packet_length = self.constant_packet_length
                 else:
                     packet_length = packet[2]
-                
+
                 if packet_length <= 0:
                     #LOGGER.error(f"Invalid packet length in packet: {packet.hex()}")
                     return b''
 
                 packet += await recv_exactly(packet_length - len(packet))
-                
+
                 if len(packet) >= packet_length:
                     return packet[:packet_length]
 
         except socket.error as e:
             LOGGER.error(f"Socket error: {e}")
-            await self.reconnect()
-        
+            raise
+
         return b''
-    
+
     async def close(self) -> None:
         """Close the connection."""
         if self.writer:
             LOGGER.info("Connection closed.")
-            self.writer.close()
-            await self.writer.wait_closed()
-            self.writer = None
+            await self._close_writer()
 
 
 class BestinHub:
