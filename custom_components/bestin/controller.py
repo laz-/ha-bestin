@@ -417,14 +417,21 @@ class BestinController:
         packet.extend(bytearray([0] * (length - 5)))
         return packet
 
-    def parse_thermostat(self, packet: bytearray) -> tuple[dict, int]:
+    def parse_thermostat(self, packet: bytearray) -> tuple[dict | None, int]:
         """Parse thermostat data from a packet"""
         room_id = packet[5] & 0x0F
         is_heating = bool(packet[6] & 0x01)
         target_temperature = (packet[7] & 0x3F) + (packet[7] & 0x40 > 0) * 0.5
         current_temperature = int.from_bytes(packet[8:10], byteorder="big") / 10.0
-        hvac_mode = HVACMode.HEAT if is_heating else HVACMode.OFF
 
+        if not (5.0 <= current_temperature <= 40.0) or not (5.0 <= target_temperature <= 40.0):
+            LOGGER.warning(
+                "Thermostat %d: ignoring corrupt packet (current=%.1f setpoint=%.1f) raw=%s",
+                room_id, current_temperature, target_temperature, packet.hex()
+            )
+            return room_id, None
+
+        hvac_mode = HVACMode.HEAT if is_heating else HVACMode.OFF
         thermostat_state = {
             ATTR_HVAC_MODE: hvac_mode,
             SERVICE_SET_TEMPERATURE: target_temperature,
@@ -639,6 +646,8 @@ class BestinController:
         if packet_len != 10 and command in [0x81, 0x82, 0x91, 0x92, 0xB2]:
             if header == 0x28:
                 room_id, device_state = self.parse_thermostat(packet)
+                if device_state is None:
+                    return
                 device_id = f"thermostat_{room_id}"
                 self.set_device(device_id, device_state)
             elif (
