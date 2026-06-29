@@ -439,6 +439,15 @@ class BestinController:
         }
         return room_id, thermostat_state
     
+    def parse_boiler(self, packet: bytearray) -> tuple[int, dict]:
+        """Parse boiler/heating-loop status from a 0x81 packet"""
+        room_id = packet[5] & 0x0F
+        boiler_state = {
+            "floor": float(packet[6]),   # heating loop water temperature (°C)
+            "target": float(packet[9]),  # domestic hot water target temperature (°C)
+        }
+        return room_id, boiler_state
+
     def parse_gas(self, packet: bytearray) -> tuple[int, bool]:
         """Parse gas data from a packet"""
         room_id = packet[1] - 0x31  # 0x31 → 0, 0x32 → 1
@@ -650,6 +659,10 @@ class BestinController:
                     return
                 device_id = f"thermostat_{room_id}"
                 self.set_device(device_id, device_state)
+            elif header == 0x28 and command == 0x81:
+                room_id, device_state = self.parse_boiler(packet)
+                device_id = f"boiler_{room_id}"
+                self.set_device(device_id, device_state, is_sub=True)
             elif (
                 (self.gateway_type == "General" and packet_len == 30) or
                 (self.gateway_type == "AIO" and packet_len in [20, 22]) or

@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.const import (
     UnitOfEnergy,
     UnitOfPower,
+    UnitOfTemperature,
     UnitOfVolume,
     UnitOfVolumeFlowRate
 )
@@ -34,7 +35,9 @@ DEVICE_ICON = {
     "hotwater:realtime": "mdi:water-boiler",
     "hotwater:total": "mdi:water-boiler",
     "water:realtime": "mdi:water-pump",
-    "water:total": "mdi:water-pump"
+    "water:total": "mdi:water-pump",
+    "boiler:floor": "mdi:thermometer-water",
+    "boiler:target": "mdi:water-boiler",
 }
 
 DEVICE_CLASS = {
@@ -45,6 +48,8 @@ DEVICE_CLASS = {
     "electric:total": SensorDeviceClass.ENERGY,
     "gas:total": SensorDeviceClass.GAS,
     "water:total": SensorDeviceClass.WATER,
+    "boiler:floor": SensorDeviceClass.TEMPERATURE,
+    "boiler:target": SensorDeviceClass.TEMPERATURE,
 }
 
 DEVICE_UNIT = {
@@ -61,6 +66,8 @@ DEVICE_UNIT = {
     "hotwater:total": UnitOfVolume.CUBIC_METERS,
     "water:realtime": UnitOfVolumeFlowRate.CUBIC_METERS_PER_HOUR,
     "water:total": UnitOfVolume.CUBIC_METERS,
+    "boiler:floor": UnitOfTemperature.CELSIUS,
+    "boiler:target": UnitOfTemperature.CELSIUS,
 }
 
 VALUE_CONVERSION = {
@@ -151,4 +158,6 @@ class BestinSensor(BestinDevice, SensorEntity):
         """Type of this sensor state."""
         if self._device_info.device_type in ["light:dcvalue", "outlet:powercons", "energy"]:
             return "total_increasing" if "total" in self._attr_id else "measurement"
+        if DEVICE_CLASS.get(self._attr_id) == SensorDeviceClass.TEMPERATURE:
+            return "measurement"
         return None

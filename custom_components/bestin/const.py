@@ -90,7 +90,10 @@ DEVICE_PLATFORM_MAP = {
     "elevator:floor": Platform.SENSOR.value,
     "electric": Platform.SWITCH.value,
     "electric:standbycut": Platform.SWITCH.value,
-    "gas": Platform.SWITCH.value,    
+    "gas": Platform.SWITCH.value,
+    "boiler": Platform.SENSOR.value,
+    "boiler:floor": Platform.SENSOR.value,
+    "boiler:target": Platform.SENSOR.value,
 }
 
 @dataclass
