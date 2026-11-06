@@ -2,7 +2,7 @@
 import re
 import time
 import asyncio
-import serial_asyncio
+import serial_asyncio_fast as serial_asyncio
 import socket
 
 from typing import cast
