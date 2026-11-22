@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 from typing import Any, Callable
 
 from homeassistant.components.climate.const import (
@@ -45,30 +46,39 @@ ENERGY_BYTE_RANGE = {
 
 
 class AsyncQueue:
+    """FIFO command queue with a non-destructive peek.
+
+    get() returns the head WITHOUT moving it. It used to pop the head and re-append it, so every received frame
+    rotated the queue and delete() then removed whichever command happened to be at the head: unsent commands were
+    dropped and acknowledged ones were re-sent (dlxmax/ha-bestin-fork#14).
+    """
+
     def __init__(self):
-        self.queue = asyncio.Queue()
+        self.queue: deque = deque()
 
     async def put(self, item):
-        """Function to put data into the queue"""
-        await self.queue.put(item)
-    
+        """Append an item to the tail"""
+        self.queue.append(item)
+
     async def get(self):
-        """Function to get data from the queue (only retrieve, not delete)"""
-        if not self.queue.empty():
-            item = await self.queue.get()
-            await self.queue.put(item)
-            return item
-        return None
-    
-    async def delete(self):
-        """Function to delete data from the queue"""
-        if not self.queue.empty():
-            return await self.queue.get()
-        return None
-    
+        """Return the head item without removing it (None if empty)"""
+        return self.queue[0] if self.queue else None
+
+    async def delete(self, item=None):
+        """Remove `item` (matched by identity) or, when omitted, the head. Returns the removed item or None."""
+        if not self.queue:
+            return None
+        if item is None or self.queue[0] is item:
+            return self.queue.popleft()
+        for i, queued in enumerate(self.queue):
+            if queued is item:
+                del self.queue[i]
+                return queued
+        return None  # already removed
+
     async def size(self):
         """Function to return the size of the queue"""
-        return self.queue.qsize()
+        return len(self.queue)
 
 
 class BestinController:
@@ -707,12 +717,12 @@ class BestinController:
                 "%s: Success (ACK: %s, Attempts: %d)",
                 queue["device_type"], acknowledgment.hex(), queue["send_retry"]
             )
-            await self.queue.delete()
+            await self.queue.delete(queue)
         elif send_retry > max_retry:
             LOGGER.warning(
                 "%s: Failed after %d attempts", queue["device_type"], max_retry
             )
-            await self.queue.delete()
+            await self.queue.delete(queue)
 
     async def process_incoming_data(self):
         """Process incoming data"""
