@@ -5,12 +5,15 @@ import asyncio
 import serial_asyncio_fast as serial_asyncio
 import socket
 
-from typing import cast
+from datetime import timedelta
+from typing import Callable, cast
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant, Event, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     DOMAIN,
@@ -29,6 +32,12 @@ from .center import BestinCenterAPI
 from .controller import BestinController
 from .until import check_ip_or_serial
 
+CONNECT_TIMEOUT = 5.0        # seconds to open the TCP connection
+CLOSE_TIMEOUT = 2.0          # seconds to wait for a (possibly dead) socket to close
+OFFLINE_GRACE = 60.0         # down this long -> entities go unavailable
+NOTIFY_AFTER = 300.0         # down this long -> persistent notification in HA
+WATCHDOG_INTERVAL = 15       # seconds
+
 
 class ConnectionManager:
     """Handles hub connections."""
@@ -44,6 +53,7 @@ class ConnectionManager:
         self.last_reconnect_attempt: float = None
         self.next_attempt_time: float = None
         self._reconnect_lock = asyncio.Lock()
+        self.down_since: float | None = None  # monotonic time the link was first seen down
 
         self.chunk_size = 64
         self.constant_packet_length = 10
@@ -64,6 +74,7 @@ class ConnectionManager:
             await self._connect_serial()
         elif self.is_socket:
             await self._connect_socket()
+        self.down_since = None
         LOGGER.info("Connection established successfully.")
 
     async def _connect_serial(self) -> None:
@@ -76,8 +87,31 @@ class ConnectionManager:
     async def _connect_socket(self) -> None:
         """Establish a socket connection."""
         host, port = self.conn_str.split(":")
-        self.reader, self.writer = await asyncio.open_connection(host, int(port))
+        self.reader, self.writer = await asyncio.wait_for(
+            asyncio.open_connection(host, int(port)), timeout=CONNECT_TIMEOUT
+        )
+        self._enable_keepalive()
         LOGGER.info(f"Socket connection established to {host}:{port}")
+
+    def _enable_keepalive(self) -> None:
+        """Detect a vanished EW11 (power loss leaves a half-open TCP connection) within ~1 min."""
+        sock = self.writer.get_extra_info("socket") if self.writer else None
+        if sock is None:
+            return
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            for name, value in (("TCP_KEEPIDLE", 20), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3),
+                                ("TCP_USER_TIMEOUT", 45000)):
+                if hasattr(socket, name):
+                    sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, name), value)
+        except OSError as e:
+            LOGGER.debug(f"Could not set TCP keepalive: {e}")
+
+    def down_for(self) -> float | None:
+        """Seconds the link has been continuously down, or None if it is up."""
+        if self.down_since is None:
+            return None
+        return time.monotonic() - self.down_since
 
     def is_connected(self) -> bool:
         """Check if the connection is active."""
@@ -96,14 +130,20 @@ class ConnectionManager:
         if self.writer is not None:
             try:
                 self.writer.close()
-                await self.writer.wait_closed()
+                await asyncio.wait_for(self.writer.wait_closed(), timeout=CLOSE_TIMEOUT)
             except Exception:
-                pass
+                # A dead peer never ACKs, so a graceful close can hang; drop the socket.
+                try:
+                    self.writer.transport.abort()
+                except Exception:
+                    pass
             self.writer = None
 
     async def reconnect(self) -> None:
         """Attempt to reconnect with exponential backoff. Serialized via lock."""
         async with self._reconnect_lock:
+            if self.down_since is None:
+                self.down_since = time.monotonic()
             await self._close_writer()
 
             current_time = time.time()
@@ -233,6 +273,9 @@ class BestinHub:
         self.gateway_mode: tuple[str, dict[bytes] | None] = None
         self.entity_groups: dict[str, set[str]] = {}
         self.entity_to_id: dict[str, str] = {}
+        self._offline = False
+        self._notified = False
+        self._unsub_watchdog: Callable[[], None] | None = None
 
     @staticmethod
     def get_hub(hass: HomeAssistant, entry: ConfigEntry) -> BestinCenterAPI | BestinController:
@@ -258,7 +301,9 @@ class BestinHub:
     def available(self) -> bool:
         """Check if the hub is available."""
         if self.connection:
-            return self.connection.is_connected()
+            # A brief reconnect (the quiet-bus 30 s timeout does this routinely) must not flicker entities;
+            # only a link that stayed down past OFFLINE_GRACE counts as unavailable.
+            return self.connection.is_connected() or not self._offline
         return True
     
     @property
@@ -394,8 +439,68 @@ class BestinHub:
         await self.connection.connect()
         return self.available
     
+    @property
+    def _notification_id(self) -> str:
+        return f"{DOMAIN}_offline_{self.entry.entry_id}"
+
+    @property
+    def _target(self) -> str:
+        return str(self.entry.data.get("host") or self.hub_id)
+
+    def notify_unreachable(self, reason: str) -> None:
+        """Raise a persistent notification in HA (idempotent per config entry)."""
+        persistent_notification.async_create(
+            self.hass,
+            f"The BESTIN adapter at **{self._target}** is not reachable ({reason}). "
+            "Its entities are unavailable. Check the adapter's power and network link; "
+            "the integration reconnects by itself once it answers.",
+            title="BESTIN adapter offline",
+            notification_id=self._notification_id,
+        )
+
+    def dismiss_notification(self) -> None:
+        persistent_notification.async_dismiss(self.hass, self._notification_id)
+
+    def _refresh_entities(self) -> None:
+        """Re-write entity state so availability changes show up immediately."""
+        devices = getattr(self.api, "devices", None) or {}
+        for device in list(devices.values()):
+            device.update_callbacks()
+
+    @callback
+    def _watchdog(self, _now=None) -> None:
+        """Turn a long link outage into unavailable entities and a notification; undo on recovery."""
+        down = self.connection.down_for() if self.connection else None
+        if down is None:
+            if self._offline or self._notified:
+                LOGGER.info(f"{self._target}: connection restored")
+                self._offline = False
+                self._notified = False
+                self.dismiss_notification()
+                self._refresh_entities()
+            return
+        if down >= OFFLINE_GRACE and not self._offline:
+            LOGGER.warning(f"{self._target}: link down for {int(down)}s, marking entities unavailable")
+            self._offline = True
+            self._refresh_entities()
+        if down >= NOTIFY_AFTER and not self._notified:
+            self._notified = True
+            self.notify_unreachable(f"down for {int(down // 60)} min")
+
+    def start_watchdog(self) -> None:
+        if self.connection and not self._unsub_watchdog:
+            self._unsub_watchdog = async_track_time_interval(
+                self.hass, self._watchdog, timedelta(seconds=WATCHDOG_INTERVAL)
+            )
+
+    def stop_watchdog(self) -> None:
+        if self._unsub_watchdog:
+            self._unsub_watchdog()
+            self._unsub_watchdog = None
+
     async def async_close(self) -> None:
         """Close the hub connection."""
+        self.stop_watchdog()
         if self.api:
             await self.api.stop()
         if self.connection and self.available:
@@ -406,6 +511,7 @@ class BestinHub:
     @callback
     async def shutdown(self, event: Event) -> None:
         """Shutdown the hub."""
+        self.stop_watchdog()
         if self.api:
             await self.api.stop()
         if self.connection and self.available:
@@ -460,3 +566,4 @@ class BestinHub:
         """Start processing after platform setup has registered all dispatcher listeners."""
         if self.api:
             await self.api.start()
+        self.start_watchdog()

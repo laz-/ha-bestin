@@ -718,7 +718,10 @@ class BestinController:
         """Process incoming data"""
         while True:
             if not self.is_alive:
-                await self.connection.reconnect()
+                try:
+                    await self.connection.reconnect()
+                except Exception as ex:  # never let the receive loop die; the watchdog reports the outage
+                    LOGGER.error(f"Reconnect failed unexpectedly: {ex}", exc_info=True)
                 await asyncio.sleep(1)
                 continue
 

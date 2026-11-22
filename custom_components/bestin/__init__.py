@@ -20,10 +20,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if CONF_SESSION not in entry.data:
         try:
             await asyncio.wait_for(hub.connect(), timeout=5)
-        except asyncio.TimeoutError as ex:
+        except (asyncio.TimeoutError, OSError) as ex:
+            # OSError = no route / connection refused / reset: the adapter is off the network. This used to
+            # fail the entry for good; ConfigEntryNotReady makes HA keep retrying with backoff.
             await hub.async_close()
             hass.data[DOMAIN].pop(entry.entry_id)
-            raise ConfigEntryNotReady(f"Connection to {hub.hub_id} timed out.") from ex
+            hub.notify_unreachable(type(ex).__name__)
+            raise ConfigEntryNotReady(f"Connection to {hub.hub_id} failed: {ex!r}") from ex
 
         LOGGER.info("Start serial initialization.")
         await hub.async_initialize_serial()
@@ -40,6 +43,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # dispatcher listeners are registered before the first packets arrive.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await hub.async_start()
+    hub.dismiss_notification()
 
     return True
 
